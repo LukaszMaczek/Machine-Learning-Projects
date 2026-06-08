@@ -1,0 +1,324 @@
+---
+title: "Sprawozdanie7"
+author: "Łukasz Maczek, Marta Kreis"
+date: "2025-12-03"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+  pdf_document:
+    toc: true
+    toc_depth: '2'
+---
+
+# Potrzebne biblioteki
+```{r message=FALSE, warning=FALSE}
+library(dplyr)
+library(mice)
+library(caret)
+library(e1071)
+library(ROSE)
+
+```
+
+# Przygotowanie danych
+```{r}
+dane_stroke = read.csv2("stroke.csv", dec = ".")
+
+summary(dane_stroke)
+
+md.pattern(dane_stroke, rotate.names = TRUE)
+dane_stroke = na.omit(dane_stroke)
+md.pattern(dane_stroke, rotate.names = TRUE)
+
+dane_stroke$work_type = as.factor(dane_stroke$work_type)
+dane_stroke$smoking_status = as.factor(dane_stroke$smoking_status)
+dane_stroke$gender = as.factor(dane_stroke$gender)
+dane_stroke$hypertension = as.factor(dane_stroke$hypertension)
+dane_stroke$heart_disease = as.factor(dane_stroke$heart_disease)
+dane_stroke$ever_married = as.factor(dane_stroke$ever_married)
+dane_stroke$Residence_type = as.factor(dane_stroke$Residence_type)
+dane_stroke$stroke = as.factor(dane_stroke$stroke)
+
+summary(dane_stroke)
+
+#Poziom niezbalansowania zbioru
+prop.table(table(dane_stroke$stroke))
+
+
+#funkcja licząca miary klasyfikacji
+calc_metrics <- function(true, pred, model_name, set_name) {
+  cm <- confusionMatrix(pred, true, positive = "1")
+  
+  data.frame(
+    Model = model_name,
+    Set = set_name,
+    Accuracy = round(cm$overall["Accuracy"], 5),
+    Sensitivity = round(cm$byClass["Sensitivity"], 5),
+    Specificity = round(cm$byClass["Specificity"], 5)
+  )
+}
+
+
+#Podział na zbiór uczący i testowy
+set.seed(123)
+index = sample(nrow(dane_stroke), size = 0.2*nrow(dane_stroke), replace = F)
+testowy = dane_stroke[index,]
+uczacy = dane_stroke[-index,]
+
+
+results = data.frame()
+
+#Model svm jądro radialne niezbalansowany
+model_unb = svm(stroke ~ ., data = uczacy, kernel = "radial")
+
+pred_uczacy_unb = predict(model_unb, newdata = uczacy)
+pred_testowy_unb = predict(model_unb, newdata = testowy)
+
+results <- rbind(results,
+                 calc_metrics(uczacy$stroke, pred_uczacy_unb, "SVM_unbalanced", "Uczący"),
+                 calc_metrics(testowy$stroke, pred_testowy_unb, "SVM_unbalanced", "Testowy")
+)
+```
+
+
+# UNDERSAMPLING
+
+## Model zbalansowany undersampling
+losowy undersampling
+```{r}
+set.seed(123)
+dane_b_under = ovun.sample(stroke ~., data = uczacy, method = "under")$data
+nrow(dane_b_under)
+prop.table(table(dane_b_under$stroke))
+
+model_b_under = svm(stroke ~ ., data = dane_b_under, kernel = "radial")
+
+pred_uczacy_under = predict(model_b_under, newdata = dane_b_under)
+pred_testowy_under = predict(model_b_under, newdata = testowy)
+
+results <- rbind(results,
+                 calc_metrics(dane_b_under$stroke, pred_uczacy_under, "SVM_undersampling", "Uczący"),
+                 calc_metrics(testowy$stroke, pred_testowy_under, "SVM_undersampling", "Testowy")
+)
+```
+
+# OVERSAMPLING
+## Model zbalansowany - oversampling
+losowy oversampling
+```{r}
+set.seed(123)
+dane_b_over = ovun.sample(stroke ~., data = uczacy, method = "over")$data
+nrow(dane_b_over)
+prop.table(table(dane_b_over$stroke))
+
+model_b_over = svm(stroke ~ ., data = dane_b_over, kernel = "radial")
+
+pred_uczacy_over = predict(model_b_over, newdata = dane_b_over)
+pred_testowy_over = predict(model_b_over, newdata = testowy)
+
+results <- rbind(results,
+                 calc_metrics(dane_b_over$stroke, pred_uczacy_over, "SVM_oversampling", "Uczący"),
+                 calc_metrics(testowy$stroke, pred_testowy_over, "SVM_oversampling", "Testowy")
+)
+
+rownames(results) = NULL
+results
+```
+# Odpowiedzi do zadania 1
+a) Wyszło nam, że 
+Brak udaru: 95.74%
+Udar: 4.26%
+
+Zbiór jest więc silnie niezbalansowany, ponieważ udar stanowi tylko około 4% obserwacji.
+Dane podzieliśmy na zbiór testwoy(30%) i uczący(70%)
+
+b) Zbudowaliśmy liniowy model SVM niezbalansowany.
+Wyniki dla zbioru testowego:
+
+- Accuracy: 0.96534
+- Sensitivity: 0.00000
+- Specificity: 1.00000
+
+Interpretacja:
+
+- Model osiąga wysoką accuracy tylko dlatego, że prawie zawsze przewiduje klasę 0 (brak udaru).
+- Czułość równa 0 oznacza, że model nie wykrył ani jednego przypadku udaru.
+- Specyficzność równa 1 pokazuje, że model poprawnie klasyfikuje wszystkie przypadki negatywne.
+
+Model na niezbalansowanym zbiorze jest więc praktycznie bezużyteczny diagnostycznie, mimo pozornie dobrego accuracy.
+
+c) Wpływ oversamplingu i undersamplingu na jakość modelu
+W celu poradzenia sobie z niezbalansowaniem zastosowano dwie techniki undersampling oraz oversampling, korzystając z funkcji ovun.sample() z pakietu ROSE.
+
+**Undersampling** usuwa część obserwacji klasy dominującej, tworząc mały, ale zbalansowany zbiór.
+Wyniki SVM po undersamplingu:
+Zbiór testowy:
+
+- Accuracy: 0.677
+- Sensitivity: 0.882
+- Specificity: 0.669
+
+Interpretacja:
+
+- Ogromny wzrost czułości – model wykrywa udary bardzo dobrze.
+- Spadek accuracy i specificity – model częściej popełnia błędy przy klasie 0.
+- Undersampling działa, ale działa na małym zbiorze - większa niestabilność.
+
+
+**Oersampling** zwiększa liczbę obserwacji klasy mniejszościowej poprzez jej replikację lub generowanie sztucznych przykładów.
+
+Wyniki SVM po oversamplingu:
+
+Zbiór testowy:
+
+- Accuracy: 0.723
+- Sensitivity: 0.794
+- Specificity: 0.720
+
+Interpretacja:
+
+- Czułość wyraźnie większa niż w modelu niezbalansowanym.
+- Stabilniejszy model niż w undersamplingu.
+- Najlepszy kompromis między trzema miarami: accuracy, czułością i specyficznością.
+
+
+Zatem porównując wnioskujemy, że sposród metod oversamplingu, undersamplingu i bez: 
+
+- Najlepszy wynik praktyczny (wykrywanie udarów): oversampling
+- Najwyższa czułość: undersampling
+- Najgorsza metoda: brak resamplingu
+
+d) Opis technik oversamplingu i undersamplingu:
+
+W analizie wykorzystano dwie techniki radzenia sobie z niezbalansowanym zbiorem danych: oversampling i undersampling. Obie metody mają na celu wyrównanie liczby obserwacji w klasie pozytywnej i negatywnej, aby model nie był uprzedzony wobec klasy rzadkiej.
+
+Oversampling polega na zwiększeniu liczby obserwacji klasy mniejszościowej, czyli tej, która występuje rzadziej. W praktyce polega to na powielaniu istniejących przypadków klasy pozytywnej, aż do momentu osiągnięcia zbliżonej liczby obserwacji jak w klasie negatywnej. W pakiecie ROSE w R wykonywane jest to za pomocą funkcji ovun.sample z parametrem method over. Funkcja losowo wybiera obserwacje z klasy mniejszej i dodaje ich kopie, co powiększa zbiór danych i równocześnie wyrównuje jego strukturę. Dzięki temu model uczy się na większej liczbie przykładów klasy rzadkiej i zwiększa swoje szanse na wykrywanie przypadków pozytywnych.
+
+Undersampling działa odwrotnie niż oversampling. Polega na zmniejszeniu liczby obserwacji klasy dominującej, czyli klasy częstej. Funkcja ovun.sample z parametrem method under usuwa losowo część obserwacji z klasy negatywnej, aż dwie klasy mają porównywalną liczebność. Dzięki temu zbiór danych staje się zbalansowany, ale jednocześnie mniejszy. Metoda ta eliminuje problem uprzywilejowania klasy negatywnej, ale może prowadzić do utraty ważnych informacji, ponieważ część danych jest usuwana.
+
+Podsumowując, oversampling zwiększa liczbę przykładów klasy rzadkiej, natomiast undersampling zmniejsza liczbę przykładów klasy częstej. Obie techniki usuwają problem niezbalansowania danych, dzięki czemu model nie ignoruje klasy pozytywnej i może skuteczniej ją wykrywać. Oversampling daje zwykle bardziej stabilne i dokładniejsze wyniki, natomiast undersampling może być mniej precyzyjny, ale bywa skuteczny przy bardzo silnym niezbalansowaniu.
+
+
+# Zadanie 2
+
+```{r}
+set.seed(123)
+prop_pos = c(0.1, 0.2, 0.3, 0.4)
+
+results_sim = data.frame()
+
+pos_all = dane_stroke %>% filter(stroke == "1")
+neg_all = dane_stroke %>% filter(stroke == "0")
+
+for (p in prop_pos) {
+  N = nrow(dane_stroke)
+  n_pos = round(N * p)
+  n_neg = N - n_pos
+  
+  pos_sample = pos_all %>% sample_n(n_pos, replace = TRUE)
+  neg_sample = neg_all %>% sample_n(n_neg, replace = TRUE)
+  
+  data_sim = rbind(pos_sample, neg_sample)
+  
+  index = sample(nrow(data_sim), size = 0.2 * nrow(data_sim))
+  test_sim = data_sim[index, ]
+  train_sim = data_sim[-index, ]
+  
+  model_unb = svm(stroke ~ ., data = train_sim, kernel = "radial")
+  
+  pred_train_unb = predict(model_unb, train_sim)
+  pred_test_unb  = predict(model_unb, test_sim)
+  
+  tmp = rbind(
+    calc_metrics(train_sim$stroke, pred_train_unb, "Unbalanced", "Uczący"),
+    calc_metrics(test_sim$stroke, pred_test_unb, "Unbalanced", "Testowy")
+  )
+  tmp$prop = p
+  results_sim = rbind(results_sim, tmp)
+  
+  set.seed(123)
+  train_under = ovun.sample(stroke ~ ., data = train_sim, method = "under")$data
+  
+  model_under = svm(stroke ~ ., data = train_under, kernel = "radial")
+  
+  pred_train_under = predict(model_under, train_under)
+  pred_test_under = predict(model_under, test_sim)
+  
+  tmp = rbind(
+    calc_metrics(train_under$stroke, pred_train_under, "Undersampling", "Uczący"),
+    calc_metrics(test_sim$stroke, pred_test_under, "Undersampling", "Testowy")
+  )
+  tmp$prop = p
+  results_sim = rbind(results_sim, tmp)
+  
+  set.seed(123)
+  train_over = ovun.sample(stroke ~ ., data = train_sim, method = "over")$data
+  
+  model_over = svm(stroke ~ ., data = train_over, kernel = "radial")
+  
+  pred_train_over = predict(model_over, train_over)
+  pred_test_over = predict(model_over, test_sim)
+  
+  tmp = rbind(
+    calc_metrics(train_over$stroke, pred_train_over, "Oversampling", "Uczący"),
+    calc_metrics(test_sim$stroke, pred_test_over, "Oversampling", "Testowy")
+  )
+  tmp$prop = p
+  results_sim = rbind(results_sim, tmp)
+}
+
+rownames(results_sim) = NULL
+results_sim %>% select(prop, Model, Set, Accuracy, Sensitivity, Specificity)
+
+```
+## Na zbiorach uczących (do porównania z wynikami testowych)
+```{r}
+results_sim %>%
+  select(prop, Model, Set, Accuracy, Sensitivity, Specificity) %>%
+  filter(Set=="Uczący")
+```
+
+## Klasyfikacja według czułości
+```{r}
+results_sim %>%
+  arrange(desc(Sensitivity)) %>% 
+  select(prop, Model, Set, Accuracy, Sensitivity, Specificity) %>%
+  filter(Set == "Testowy")
+```
+
+# Odpowiedzi do zadania 2
+Porównanie modeli dla różnych stopni niezbalasownaia danych:
+
+W ramach zadania przygotowano cztery zbiory danych o różnym udziale klasy pozytywnej (1) i negatywnej (0) (udział klasy pozytywnej 10%, 20%, 20%, 40%)
+
+Dla każdego zbioru zbudowano trzy modele:
+
+- model bez radzenia sobie z niezbalansowaniem
+- model z oversamplingiem
+- model z undersamplingiem
+
+Następnie porównano miary jakości: dokładność (accuracy), czułość (sensitivity) i specyficzność (specificity).
+
+**Udział klasy pozytywnej 10%**
+Model bez resamplingu miał czułość równą 0, czyli nie wykrył ani jednego przypadku klasy pozytywnej.
+Model z oversamplingiem miał czułość około 0.70.
+Model z undersamplingiem osiągnął najwyższą czułość, około 0.88, ale kosztem niskiej specyficzności i dokładności.
+Wniosek: przy bardzo rzadkiej klasie najlepiej działał undersampling pod względem samej czułości, ale oversampling dawał bardziej zrównoważone wyniki.
+
+**Udział klasy pozytywnej 20%**
+Model bez resamplingu wykrywał bardzo mało pozytywnych przypadków (czułość około 0.11). Oversampling osiągnął najwyższą czułość w całej symulacji, około 0.92, oraz dobrą specyficzność i dokładność. Undersampling również miał wysoką czułość, około 0.91, ale był mniej stabilny niż oversampling. Zatem przy udziale 20% najlepszą metodą był oversampling.
+
+**Udział klasy pozytywnej 30%**
+Model bez resamplingu zaczął działać lepiej, czułość około 0.43. Oversampling osiągnął czułość około 0.87 i był najbardziej zrównoważony. Undersampling dał czułość około 0.74 i najniższą dokładność. Zatem im większy udział klasy pozytywnej, tym mniej skuteczny staje się undersampling, natomiast oversampling pozostaje stabilny.
+
+**Udział klasy pozytywnej 40%**
+Model bez resamplingu miał już sensowną czułość, około 0.76. Oversampling nadal był najlepszy, z czułością około 0.90. Undersampling dał wynik około 0.80 i najsłabszą dokładność. Zatem przy dużym udziale klasy pozytywnej wszystkie modele działają lepiej, ale oversampling wciąż daje najwyższą jakość.
+
+Podsumowanie ogólne:
+
+Model bez resamplingu działa słabo przy 10–20% pozytywnej klasy, ponieważ praktycznie ignoruje rzadkie przypadki. Undersampling najlepiej sprawdza się tylko wtedy, gdy dane są bardzo mocno niezbalansowane (10%), ale traci jakość przy wyższych proporcjach. Oversampling jest najbardziej stabilną i najskuteczniejszą metodą we wszystkich wariantach. Osiąga wysoką czułość oraz dobrą dokładność i specyficzność.
+Zatem oversampling jest najlepszą techniką w większości przypadków i daje najbardziej zrównoważone wyniki niezależnie od udziału klasy pozytywnej.

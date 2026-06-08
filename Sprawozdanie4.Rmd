@@ -1,0 +1,316 @@
+---
+title: "Sprawozdanie4"
+author: "Łukasz Maczek, Marta Kreis"
+date: "2025-11-03"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+---
+
+# Potrzebne biblioteki
+```{r message=FALSE, warning=FALSE}
+library(rpart)
+library(rattle)
+library(caret)
+library(vip)
+library(VIM)
+library(randomForest)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+```
+
+# Zbiory danych
+## Stroke
+Na początku zadania wczytano plik `Stroke`, który zawiera dane dotyczące pacjentów, u których miał miejsce udar lub nie. Zbiór składa się z 11 zmiennych:
+
+- Gender (płeć) - zmienna kategoryczna
+- Age (wiek) - zmienna liczbowa
+- Hypertension (nadciśnienie) - zmienna binarna (1 gdy nadciśnienie występuje)
+- Heart_disease (choroba serca) - zmienna binarna (1 gdy choroba serca występuje)
+- Ever_married (Czy osoba była kiedyś w związku małżeńskim) - zmienna kategoryczna
+- Work_type (Prywatna, Rządowa, Samozatrudnienie, Bezrobotny, Dziecko)
+- Residence_type (Miejsce zamieszkania) - zmienna kategoryczna
+- Avg_glucose_level (średni poziom glukozy) - zmienna liczbowa
+- Bmi - zmienna liczbowa
+- Smoking_status (Kiedyś palił, Nadal pali, Nigdy nie palił, Nieznane) - zmienna kategoryczna
+- Stroke (udar) - zmienna binarna (1 gdy wystąpił udar)
+
+
+# Przygotowanie danych
+```{r}
+dane_stroke = read.csv2("zaj3_Stroke.csv", dec = ".")
+
+dane_stroke$work_type = as.factor(dane_stroke$work_type)
+dane_stroke$smoking_status = as.factor(dane_stroke$smoking_status)
+dane_stroke$gender = as.factor(dane_stroke$gender)
+dane_stroke$age = as.numeric(dane_stroke$age)
+dane_stroke$avg_glucose_level = as.numeric(gsub(",", ".",dane_stroke$avg_glucose_level))
+dane_stroke$bmi = as.numeric(gsub(",", ".",dane_stroke$bmi))
+dane_stroke$hypertension = as.factor(dane_stroke$hypertension)
+dane_stroke$heart_disease = as.factor(dane_stroke$heart_disease)
+dane_stroke$ever_married = as.factor(dane_stroke$ever_married)
+dane_stroke$Residence_type = as.factor(dane_stroke$Residence_type)
+dane_stroke$stroke = as.factor(dane_stroke$stroke)
+
+#braki danych uzupełnione knn
+set.seed(123)
+dane_stroke_final = kNN(dane_stroke, k = 5, imp_var = FALSE)
+
+summary(dane_stroke_final)
+```
+
+Zbiór jest zbalansowany (po 50% wyników pozytywnych i negatywnych dla stroke)
+```{r}
+summary(dane_stroke_final$stroke)
+```
+
+
+# Zadanie 2
+
+## Model drzewa decyzyjnego
+```{r}
+set.seed(123)
+index = sample(nrow(dane_stroke_final), size = 0.2*nrow(dane_stroke_final), replace = F)
+testowy = dane_stroke_final[index,]
+uczacy = dane_stroke_final[-index,]
+model = rpart(stroke ~.,
+              data = uczacy,
+              method = "class")
+model
+
+#Wykres
+fancyRpartPlot(model, sub = NULL)
+
+#predykcja na zbiorze uczącym i testowym
+y_pred_stroke = predict(model, newdata = uczacy, type = "class")
+y_pred_test = predict(model, newdata = testowy, type = "class")
+#uczący
+confusionMatrix(y_pred_stroke, uczacy$stroke, positive = "1")
+#testowy
+confusionMatrix(y_pred_test, testowy$stroke, positive = "1")
+
+#Model ze zmienioną maksymalną głębokością
+model2 = rpart(stroke ~.,
+               data = uczacy,
+               method = "class",
+               control = rpart.control(maxdepth = 4))
+fancyRpartPlot(model2, sub = NULL)
+
+#Ważność zmiennych
+vip(model2)
+
+#pakiet caret i drzewa decyzyjne
+model3 = caret::train(stroke ~.,
+                      data = uczacy,
+                      method = "rpart",
+                      tuneGrid = expand.grid(cp = seq(0.02, 0.2, 0.02)))
+
+
+```
+## 2a) Wpływ przycięcia drzewa na wyniki
+W celu uniknięcia przeuczenia modelu sprawdziliśmy wpływ głębokości drzewa na wyniki.  
+Zwiększanie głębokości poprawia dokładność na zbiorze uczącym, ale pogarsza wyniki na zbiorze testowym – co oznacza nadmierne dopasowanie.
+
+```{r}
+set.seed(123)
+# Drzewo bez ograniczenia
+model_full <- rpart(stroke ~ ., data = uczacy, method = "class")
+
+# Drzewo przycięte
+model_pruned <- rpart(stroke ~ ., data = uczacy, method = "class",
+                      control = rpart.control(maxdepth = 4))
+
+# Predykcje
+pred_train_full <- predict(model_full, newdata = uczacy, type = "class")
+pred_test_full <- predict(model_full, newdata = testowy, type = "class")
+pred_train_pruned <- predict(model_pruned, newdata = uczacy, type = "class")
+pred_test_pruned <- predict(model_pruned, newdata = testowy, type = "class")
+
+# Macierze pomyłek
+cm_train_full <- confusionMatrix(pred_train_full, uczacy$stroke, positive = "1")
+cm_test_full <- confusionMatrix(pred_test_full, testowy$stroke, positive = "1")
+cm_train_pruned <- confusionMatrix(pred_train_pruned, uczacy$stroke, positive = "1")
+cm_test_pruned <- confusionMatrix(pred_test_pruned, testowy$stroke, positive = "1")
+
+cm_test_full
+cm_test_pruned
+```
+
+
+## 2b) Wpływ reguły klasyfikacyjnej (indeks Giniego vs entropia)
+
+Porównano dwie reguły podziału: **indeks Giniego** i **entropię**.
+
+```{r}
+set.seed(123)
+model_gini <- rpart(stroke ~ ., data = uczacy, method = "class",
+                    parms = list(split = "gini"),
+                    control = rpart.control(cp = 0.01, maxdepth = 4))
+
+model_entropy <- rpart(stroke ~ ., data = uczacy, method = "class",
+                       parms = list(split = "information"),
+                       control = rpart.control(cp = 0.01, maxdepth = 4))
+
+pred_gini <- predict(model_gini, newdata = testowy, type = "class")
+pred_entropy <- predict(model_entropy, newdata = testowy, type = "class")
+
+cm_gini <- confusionMatrix(pred_gini, testowy$stroke, positive = "1")
+cm_entropy <- confusionMatrix(pred_entropy, testowy$stroke, positive = "1")
+
+cm_gini
+cm_entropy
+
+```
+## Interpretacja wyników drzewa decyzyjnego
+
+Model drzewa decyzyjnego osiągnął dokładność na poziomie około **72,5%** na zbiorze testowym, przy czułości **78%** i specyficzności **67%**. Oznacza to, że model dobrze wykrywa przypadki udaru, ale nieco gorzej rozpoznaje osoby zdrowe.
+
+Przycięcie drzewa nie pogorszyło jakości predykcji, a model stał się bardziej przejrzysty i mniej podatny na przeuczenie. Najlepsze wyniki uzyskano dla drzewa o średniej głębokości, co stanowi kompromis między złożonością a skutecznością.
+
+Porównując różne reguły podziału — **indeks Giniego** i **entropię** — zauważono niewielkie różnice w wynikach. Modele zbudowane na obu kryteriach dają podobną skuteczność, dlatego można pozostać przy indeksie Giniego jako bardziej standardowym podejściu.
+
+Najważniejsze zmienne w modelu to **wiek**, **średni poziom glukozy** oraz **BMI**. Wskazuje to, że czynniki zdrowotne i styl życia mają kluczowy wpływ na ryzyko wystąpienia udaru.
+
+
+
+
+# Zadanie 3
+
+## Zastosowanie Baggingu
+```{r}
+p = ncol(uczacy) - 1  # liczba predyktorów (zakładamy, że stroke jest jedną z kolumn)
+predictors = setdiff(names(uczacy), "stroke")
+
+ntree_list = c(10, 50, 100, 200, 500)
+# sampsize jako ułamek lub liczba — użyjemy proporcji względem nrow(uczacy)
+sampsize_prop = c(0.5, 0.7, 0.9, 1.0)
+
+# Metryki dla danej predykcji
+calc_metrics = function(true, pred, positive_level = "1") {
+  cm = caret::confusionMatrix(pred, true, positive = positive_level)
+  out = c(Accuracy = as.numeric(cm$overall["Accuracy"]),
+          Sensitivity = as.numeric(cm$byClass["Sensitivity"]),
+          Specificity = as.numeric(cm$byClass["Specificity"]))
+  return(out)
+}
+
+set.seed(123)
+results = data.frame()
+for(nt in ntree_list) {
+  for(sp in sampsize_prop) {
+    cat("Trenuję: ntree =", nt, "sampsize_prop =", sp, "\n")
+    sampsize_n = floor(nrow(uczacy) * sp)
+    if(sampsize_n < 1) next
+    
+    rf = randomForest(
+      formula = stroke ~ .,
+      data = uczacy,
+      ntree = nt,
+      mtry = p,
+      sampsize = sampsize_n,
+      replace = TRUE
+    )
+    
+    # Predykcje - na zbiorze uczącym i testowym
+    pred_train = predict(rf, newdata = uczacy, type = "response")
+    pred_test = predict(rf, newdata = testowy, type = "response")
+    
+    # Metryki
+    met_train = calc_metrics(uczacy$stroke, pred_train, positive_level = "1")
+    met_test  = calc_metrics(testowy$stroke, pred_test, positive_level = "1")
+    
+    # Zapisywanie wyniku
+    results = rbind(results, data.frame(
+      ntree = nt,
+      sampsize_prop = sp,
+      sampsize_n = sampsize_n,
+      Accuracy_train = met_train["Accuracy"],
+      Sensitivity_train = met_train["Sensitivity"],
+      Specificity_train = met_train["Specificity"],
+      Accuracy_test  = met_test["Accuracy"],
+      Sensitivity_test = met_test["Sensitivity"],
+      Specificity_test = met_test["Specificity"]
+    ))
+  }
+}
+
+results = results %>% arrange(ntree, sampsize_prop)
+print(results)
+```
+
+## Jak liczba drzew i rozmiar próby wpływa na metryki
+```{r}
+results_long = results %>%
+  pivot_longer(cols = starts_with(c("Accuracy", "Sensitivity", "Specificity")),
+               names_to = c("metric", "set"),
+               names_sep = "_",
+               values_to = "value")
+
+# Rysujemy osobno dla train/test (facet) i oddzielnie dla metric
+ggplot(results_long, aes(x = ntree, y = value, color = as.factor(sampsize_prop))) +
+  geom_line() + geom_point() +
+  facet_grid(metric ~ set, scales = "free_y") +
+  labs(title = "Wpływ liczby drzew (ntree) i rozmiaru próbki (sampsize_prop)",
+       x = "Liczba drzew (ntree)",
+       color = "sampsize_prop") +
+  theme_minimal()
+```
+
+Model jest przeuczony, w szczególności dla większej liczby drzew. Widać dysproporcję w wynikach na zbiorze testowym. Największa czułość w okolicy 100 drzew
+
+
+## Najlepszy model
+```{r}
+best_idx = which.max(results$Sensitivity_test + 1e-6 * results$Accuracy_test) #Głównie zależy nam na czułości
+best_row = results[best_idx, ]
+cat("Najlepsze parametry wg (Sensitivity_test, potem Accuracy_test):\n")
+best_row
+```
+
+Najlepszy model to model dla 10 drzew i 0,5 proporcję obserwacji ze zbioru uczącego. Osiąga on zdecydowanie słabsze wyniki na zbiorze testowym, jednak nadal są to poprawne wyniki (dokładność 75%, czułość 81% i specyficzność około 70%)
+
+
+
+# Zadanie 4
+```{r}
+# Metryki dla najlepszego drzewa (z Zad. 2)
+
+best_tree_pred <- predict(model2, newdata = testowy, type = "class")
+best_tree_cm <- confusionMatrix(best_tree_pred, testowy$stroke, positive = "1")
+
+# Metryki dla najlepszego modelu bagging (z Zad. 3)
+
+best_bagging <- randomForest(
+formula = stroke ~ .,
+data = uczacy,
+ntree = best_row$ntree,
+mtry = p,
+sampsize = floor(nrow(uczacy) * best_row$sampsize_prop),
+replace = TRUE
+)
+best_bagging_pred <- predict(best_bagging, newdata = testowy, type = "response")
+best_bagging_cm <- confusionMatrix(best_bagging_pred, testowy$stroke, positive = "1")
+
+best_tree_cm
+best_bagging_cm
+```
+## Porównanie drzewa decyzyjnego i baggingu
+
+Porównując uzyskane wyniki, można zauważyć, że metoda **bagging** poprawiła jakość predykcji względem pojedynczego drzewa decyzyjnego. Dokładność wzrosła z około **72,5%** do **73,7%**, a czułość z **78%** do **81%**. Oznacza to, że model lepiej wykrywa przypadki udaru, co ma duże znaczenie w analizie medycznej.
+
+Zaletą baggingu jest **większa stabilność i mniejsze ryzyko przeuczenia**, ponieważ wynik powstaje na podstawie uśrednienia wielu drzew. Wadą jest natomiast **utrata interpretowalności** — trudno wskazać pojedyncze reguły decyzyjne, które stoją za predykcją.
+
+Z kolei proste drzewo decyzyjne jest **łatwe w interpretacji** i pozwala zrozumieć, jakie czynniki wpływają na wynik, ale jest bardziej podatne na błędy losowe i przeuczenie.  
+
+**Podsumowując:** najlepsze wyniki osiąga bagging, natomiast pojedyncze drzewo warto stosować wtedy, gdy zależy nam na interpretacji i zrozumieniu decyzji modelu.
+
+
+
+
+
+

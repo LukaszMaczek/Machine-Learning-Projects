@@ -1,0 +1,275 @@
+---
+title: "Sprawozdanie 1"
+author: "Łukasz Maczek, Marta Kreis"
+date: "2025-10-19"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+---
+
+# Zadanie 1
+
+Na początku zadania wczytano plik `stroke`, który zawiera dane dotyczące pacjentów, u których miał miejsce udar lub nie. Zbiór składa się z 11 zmiennych, z których zmienne jakościowe zostały zamienione na zmienne binarne:
+
+- Gender (płeć) - zmienna binarna (1 w przypadku gdy mężczyzna)
+- Age (wiek) - zmienna liczbowa
+- Hypertension (nadciśnienie) - zmienna binarna (1 gdy nadciśnienie występuje)
+- Heart_disease (choroba serca) - zmienna binarna (1 gdy choroba serca występuje)
+- Ever_married (Czy osoba była kiedyś w związku małżeńskim) - zmienna binarna (1 gdy była)
+- Work_type (Prywatna, Rządowa, Samozatrudnienie, Bezrobotny, Dziecko) - podzielone na 5 zmiennych binarnych (1 gdy któraś z opcji)
+- Residence_type (Miejsce zamieszkania) - zmienna binarna (1 gdy miejsce zamieszkania w mieście)
+- Avg_glucose_level (średni poziom glukozy) - zmienna liczbowa
+- Bmi - zmienna liczbowa
+- Smoking_status (Kiedyś palił, Nadal pali, Nigdy nie palił, Nieznane) - podzielone na 4 zmienne binarne (1 gdy któraś z opcji)
+- Stroke (udar) - zmienna binarna (1 gdy wystąpił udar)
+
+## Potrzebne pakiety
+
+```{r message=FALSE, warning=FALSE}
+library(class)
+library(kknn)
+library(mice)
+library(recipes)
+library(caret)
+```
+
+## Wczytanie danych oraz ich obróbka
+
+```{r}
+dane_stroke = read.csv2("stroke.csv", dec = ".")
+head(dane_stroke)
+
+md.pattern(dane_stroke)
+dane_stroke = na.omit(dane_stroke)
+md.pattern(dane_stroke)
+
+dane_stroke$gender = ifelse(dane_stroke$gender=="Male", 1, 0) # Male to 1
+dane_stroke$ever_married = ifelse(dane_stroke$ever_married=="Yes", 1, 0)
+dane_stroke$Residence_type = ifelse(dane_stroke$Residence_type=="Urban", 1, 0) #Urban to 1
+
+#zamiana zmiennych work_type oraz smoking_status na kilka zmiennych binarnych za pomocą model.matrix()
+dane_stroke$work_type = model.matrix(~ dane_stroke$work_type - 1)
+dane_stroke$smoking_status = model.matrix(~ dane_stroke$smoking_status - 1)
+dane_stroke$stroke = as.factor(dane_stroke$stroke)
+
+#balansowanie zbioru
+stroke_0 = dane_stroke[dane_stroke$stroke == 0, ]
+stroke_1 = dane_stroke[dane_stroke$stroke == 1, ]
+
+set.seed(416669)
+stroke_0_sample = stroke_0[sample(1:nrow(stroke_0), nrow(stroke_1)), ]
+
+dane_stroke_final = rbind(stroke_0_sample, stroke_1)
+```
+
+## Odpowiedzi na pytania z zadania 1
+
+1. Celem modelu jest przewidywanie czy pacjent dozna udaru biorąc pod uwagę 10 zmiennych. Jest on tworzony na podstawie wejściowych danych
+
+2. Podział danych na zbiór uczący i testowy polega na podziale całości danych na zbiór na którym model jest trenowany (zbiór uczący) oraz na zbiór, na którym testowany jest wytrenowany model (zbiór testowy).  
+Kluczowe w tym podziale jest to, że model podczas swojego treningu nie korzystał z danych ze zbioru testowego, można więc w ten sposób sprawdzić jak dobrze działa model na nowych danych.  
+Najczęstszym podziałem zbioru na uczący i testowy to kolejno 70-80% oraz 20-30%.
+
+3. Macierz błędu pokazuje jak często otrzymany model przewidział poprawnie oraz ile razy dokonał złych wniosków. Taka macierz powstaje poprzez porównanie prognozowanych przez model wyników z faktycznymi, zawartymi w zbiorze testowym.  
+Zawiera 4 pola: TP (true positive), TN (true negative), FP (false positive) oraz FN (false negative), które przyjmują wartość T (true) w przypadku, gdy model poprawnie przewidział rezultat i F (false) kiedy prognoza była zła. Podobnie P (positive) oznacza prognozę występowania danego zjawiska (najczęściej wartość zmiennej binarnej 1), a N (negative) gdy model wskazuje na brak występowania badanego zjawiska (wartość 0)
+
+4. **Dokładność** (Accuracy) - obliczana za pomocą ilorazu $\frac{TP+FN}{TP+FN+TN+FP}$. Pokazuje zatem ile procent przypadków model przewidział poprawnie. Jest to główna miara oceny jakości modelu.  
+**Czułość** (Sensitivity) - obliczana za pomocą ilorazu $\frac{TP}{TP+FN}$. Wskazuje więc jaki procent wszystkich dobrze przewidzianych przez model przypadków stanowią te, w których badana zależność wystąpiła. Pozwala zatem uniknąć sytuacji, w której dokładność modelu jest wysoka, ale model prawie nigdy nie wskazuje na występowanie np. choroby.  
+**Specyficzność** (Specificity) - obliczana za pomocą ilorazu $\frac{TN}{TN+FP}$. Wskazuje procent przypadków negatywnych poprawnie wykrytych.  
+Nie można stwierdzić jednoznacznie, która z podanych trzech miar jest najważniejsza, każda jest istotna na swój sposób. Główną miarą oceny modelu jest jego dokładność, jednak nie jest ona wystarczająca. W przypadkach medycznych najczęściej jest przydatna także czułość, która wskazuje występowanie, np. choroby. Natomiast specyficzność może pomóc w sytuacji, w której zdrowy pacjent zostałby sklasyfikowany jako chory.  
+Oprócz tych trzech miast są także inne miary klasyfikacji modelu, m. in. takie jak precyzja (jaki procent pozytywnych prognoz był przewidziany poprawnie),  miara F oraz F1.
+
+# Zadanie 2
+
+## Zastosowanie metody k-najbliższych sąsiadów (KNN)
+
+```{r}
+set.seed(416669)
+index = sample(length(dane_stroke_final$gender), 85)
+testowy = dane_stroke_final[index,]
+uczacy = dane_stroke_final[-index,]
+
+#standaryzacja
+stand = c(2, 8, 9)
+uczacy[,stand] = scale(uczacy[,stand])
+testowy[,stand] = scale(testowy[,stand])
+
+#======================
+k_v = 11
+#Metoda knn
+# Predykcja na zbiorze uczącym
+knn.uczacy = knn(train = uczacy[, -11],
+                 test = uczacy[, -11],
+                 cl = uczacy[, 11],
+                 k = k_v)
+
+#macierz błędów
+table(knn.uczacy, uczacy$stroke)
+
+# Predykcja na zbiorze testowym
+knn.testowy = knn(train = uczacy[, -11],
+                 test = testowy[, -11],
+                 cl = uczacy[, 11],
+                 k = k_v)
+
+```
+
+Macierz błędu wskazuje na to, że model KNN dla `k=9` częściej odpowiada poprawnie niż się myli. Funkcja `confusionMatrix()` z pakietu `caret` pozwala pokazać, że model osiąga dokładność na poziomie 71,576%, czułość 75,68% oraz specyficzność o wartości 68,75%. Jest to zatem model, który dokładnie prognozuje wyniki, jednak i tak w 30% przypadków się myli.
+
+```{r}
+caret::confusionMatrix(knn.testowy, testowy$stroke, positive = "1")
+```
+
+## Metoda łokciowa dla KNN
+
+Sprawdza dokładność modelu w zależności od różnych `k`.  
+Poniższy wykres wskazuje, że najwyższa dokładność występuje dla `k=3, 11, 21`. Wykres jednak nie pokazuje jednoznacznie, które z tych k jest najlepsze.
+
+```{r}
+#Które k wybrać
+k_values <- seq(1, 31, 2)
+accuracy <- numeric(length(k_values))
+for(i in seq_along(k_values)){
+  preds <- knn(cl = uczacy[, 11],
+                train = uczacy[, -11],
+                test = testowy[, -11],
+                k = k_values[i])
+  
+  accuracy[i] <- mean(preds == testowy$stroke)
+}
+plot(k_values, accuracy, type = "b", 
+     xlab = "Liczba sąsiadów k", 
+     ylab = "Dokładność",
+     main = "Wpływ k na dokładność kNN",
+     col = "blue", pch = 19)
+```
+
+## Cross-validation dla KNN
+
+Metoda cross-validation testuje różne k i wybiera najlepsze na podstawie średniej dokładności modelu.  
+Wykres wyników otrzymanych metodą cross-validation wskazuje na to że w okolicach `k=9` lub `k=11` dalsze zwiększanie `k` nie poprawia znacząco dokładności modelu. Przyjęto zatem w modelu liczbę sąsiadów `k=11`, ponieważ oba testy wskazały na to, że jest to wartość dla której dokładność modelu jest najlepsza i zwiększenie liczby sąsiadów nie poprawi znacząco dokładności.
+
+```{r}
+#Cross-validation
+set.seed(416669)
+train_control = trainControl(method = "cv", number = 10)
+k_grid = expand.grid(k = k_values)
+
+knn_cv = train(
+  x = dane_stroke[,-11],
+  y = dane_stroke[,11],
+  method = "knn",
+  trControl = train_control,
+  tuneGrid = k_grid
+)
+
+plot(knn_cv)
+```
+
+## Odpowiedzi na pytania z zadania 2
+
+1. Jest to metoda, która przewiduje wartość zmiennej dla nowej obserwacji na podstawie najbliższych sąsiadów w zbiorze treningowym.
+
+2. K w metodzie KNN oznacza ile najbliższych sąsiadów jest sprawdzanych przy klasyfikacji.  
+Nie ma jednoznacznej odpowiedzi jaka wartość k jest najlepsza, trzeba to sprawdzić za pomocą, np. sprawdzenia dla jakiej wartości k model ma największą dokładność.  
+Najlepiej kiedy k jest liczbą nieparzystą, ponieważ sprawia to, że nie ma remisów w klasyfikacji wartości zmiennej (np. gdy jest tyle samo najbliższych sąsiadów z obu grup). W przypadku remisu wartość zmiennej jest przypisywana losowo, co sprawia, że wyniki mogą być niedokładne.
+
+3. Standaryzacja zazwyczaj jest wymagana, w szczególności gdy w modelu występują zmienne liczbowe, które mają różną skalę. Taka zmienna o dużej skali mogłaby zdominować obliczenia odległości.
+
+4. Wielkość zbioru danych ma znaczenie dla KNN, ponieważ nie buduje modelu tylko przechowuje dane i liczby odległości podczas predykcji. Zatem większa liczba obserwacji może poprawić dokładność modelu, z uwagi na to, że model ma więcej informacji.
+
+5. Zamiast klasyfikacji KNN może przewidywać wartości ciągłe. Wybierane jest k najbliższych punktów względem nowej obserwacji, a następnie liczona jest średnia wartość zmiennej celu tych sąsiadów.
+
+6. W metodzie KNN można używać zmiennych kategorycznych, jednak jeśli to możliwe, to powinny być one kodowane binarnie (0/1). Gdy występuje więcej wartości jakościowych zmiennej, wtedy istotne jest, aby sensownie przypisywać im wartości liczbowe. Kiedy na przykład występują różne kolory w zmiennej "Kolor" nie ma sensu przypisywać im wartości 1-5, tylko trzeba podzielić je na tyle zmiennych binarnych ile jest kolorów.
+
+# Zadanie 3
+
+## Zastosowanie metody ważonej k-najbliższych sąsiadów (KKNN)
+
+W metodzie KKNN z uwagi na dużą liczbę zmiennych binarnych, które są pomieszane z mniejszą liczba zmiennych liczbowych, odległości liczone były w metryce Manhattan.
+
+```{r}
+#Metoda kknn
+k_vk = 9
+# Predykcja na zbiorze uczącym
+kknn.uczacy = kknn(formula = uczacy[, 11]~.,
+                 train = uczacy[, -11],
+                 test = uczacy[, -11],
+                 k = k_vk,
+                 distance = 1,
+                 kernel = "rectangular")
+kknn.uczacy.wyniki = fitted(kknn.uczacy)
+
+#macierz błędów
+table(kknn.uczacy.wyniki, uczacy$stroke)
+```
+
+Macierz błędu wskazuje na to, że model KNN dla `k=9` częściej odpowiada poprawnie niż się myli. Osiąga on dokładność na poziomie 75,29%, czułość 81,08% oraz specyficzność o wartości 70,83%.  
+Jest to zatem model, który dokładniej prognozuje wyniki oraz jest lepszym modelem od modelu zbudowanego za pomocą metody KNN. Zastosowanie wag odległości poprawiło zatem wszystkie miary modelu.
+
+```{r}
+# Prognoza na zbiorze testowym
+kknn.testowy = kknn(formula = uczacy[, 11]~.,
+                   train = uczacy[, -11],
+                   test = testowy[, -11],
+                   k = k_v,
+                   distance = 1,
+                   kernel = "rectangular")
+kknn.testowy.wyniki = fitted(kknn.testowy)
+
+#Macierz błędów z miarami jakości klasyfikacji
+caret::confusionMatrix(kknn.testowy.wyniki, testowy$stroke, positive = "1")
+```
+
+## Metoda łokciowa dla KKNN
+
+```{r}
+#Które k wybrać dla kknn
+for(i in seq_along(k_values)){
+  model <- kknn(formula = uczacy[, 11] ~ .,
+                train = uczacy[, -11],
+                test = testowy[, -11],
+                k = k_values[i],
+                distance = 1)
+  
+  preds <- fitted(model)
+  accuracy[i] <- mean(preds == testowy$stroke)
+}
+plot(k_values, accuracy, type = "b", 
+     xlab = "Liczba sąsiadów k", 
+     ylab = "Dokładność",
+     main = "Wpływ k na dokładność kNN",
+     col = "blue", pch = 19)
+```
+
+## Cross-Validation dla KKNN
+
+Metoda cross-validation wskazuje że największ dokładność osiągana jest dla `k=5`, jednak metoda łokciowa wskazała, że najlepiej jest, gdy `k=9, 11,...,19`. W badaniu wybrano zatem `k=9`, aby ograniczyć liczbę sąsiadów dla jak najlepszej dokładności wskazanej w obu metodach.
+
+```{r}
+k_values_kknn <- data.frame(kmax = k_values,
+                       distance = 1,
+                       kernel = "optimal")
+
+kknn_cv <- train(
+  stroke ~ ., 
+  data = dane_stroke_final,
+  method = "kknn",
+  trControl = train_control,
+  tuneGrid = k_values_kknn
+)
+
+plot(kknn_cv)
+```
+
+## Odpowiedzi na pytania z zadania 3
+
+1. W metodzie KKNN dodatkowo oprócz decyzji o klasyfikacji za pomocą większości głosów wśród k najbliższych sąsiadów, uwzględniane są wagi zależne od odległości ustalone przez funkcję Kernela. Powoduje to, że bliżsi sąsiedzi mają większy wpływ niż dalsi. Jest to zatem metoda bardziej elastyczna, która pozwala na więcej możliwości (dodatkowo wybór funkcji Kernela oraz metryki odległości).
+
+2. Ograniczenia są podobne jak w przypadku metody KNN, funkcja Kernela może jednak nieco poprawić wyniki w przypadku dużego k.
+
+3. Tak w metodzie KKNN wielkość zbioru ma znaczenie, ponieważ tak jak metoda KNN, jest to metoda leniwa, której wszystkie obliczenia są dokonywane przy predykcji.
